@@ -5,6 +5,7 @@
 %% parse torrent torrent_file, it's dependent on bencode module.
 %%
 -module(torrent_file).
+-include("vlog.hrl").
 -export([parse_from_file/1, 
 		 parse/1, 
 		 size_brief/1,
@@ -53,11 +54,13 @@ type(Info) ->
 	end.
 
 parse_single(Info) ->
+    ?T(?FMT("parse_single ~p", [Info])),
 	Name = read_string("name", Info),
 	{ok, Length} = dict:find(<<"length">>, Info),
 	{Name, Length}.
 
 parse_multi(Info) ->
+    ?T(?FMT("parse_multi ~p", [Info])),
 	Root = read_string("name", Info),
 	{ok, {list, Files}} = dict:find(<<"files">>, Info),
 	FileInfo = [parse_file_item(Item) || {dict, Item} <- Files],

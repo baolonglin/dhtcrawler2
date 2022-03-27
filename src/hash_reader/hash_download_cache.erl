@@ -55,6 +55,7 @@ code_change(_, _, State) ->
     {ok, State}.
 
 handle_cast({insert, Doc}, State) ->
+    ?T(?FMT("hash_download_cache: insert ~p", [Doc])),
 	#state{dbpool = DBPool, cache = Cache, max = Max} = State,
 	NewCache = check_save(DBPool, [Doc|Cache], Max),
 	{noreply, State#state{cache = NewCache}};
@@ -65,7 +66,7 @@ handle_cast(stop, State) ->
 handle_call(size, _From, State) ->
 	#state{cache = Cache} = State,
 	{reply, length(Cache), State};
-	
+
 handle_call(get_one, _From, State) ->
 	#state{dbpool = DBPool, cache = Cache} = State,
 	{Doc, NewCache} = try_load(DBPool, Cache),
@@ -90,19 +91,28 @@ do_save(_DBPool, []) ->
 	ok;
 do_save(DBPool, Docs) ->
 	Insert = fun(Doc) ->
-		Conn = mongo_pool:get(DBPool),
-		{ID} = bson:lookup('_id', Doc),
-		Sel = {'_id', ID},
-		mongo:do(safe, master, Conn, ?HASH_DBNAME, fun() ->
-			mongo:update(?HASH_DOWNLOAD_COLL, Sel, Doc, true)
-		end)
+		% Conn = mongo_pool:get(DBPool),
+        Conn = poolboy:checkout(DBPool),
+		% {ID} = bson:lookup('_id', Doc),
+        ID = maps:get(<<"_id">>, Doc),
+		% Sel = {'_id', ID},
+		% mongo:do(safe, master, Conn, ?HASH_DBNAME, fun() ->
+		%	mongo:update(?HASH_DOWNLOAD_COLL, Sel, Doc, true)
+		%end)
+        mc_worker_api:update(#{connection => Conn, collection => ?HASH_DOWNLOAD_COLL,
+                               database => ?HASH_DBNAME, upsert => true,
+                               selector => #{<<"_id">> => ID}, doc => Doc}),
+        poolboy:checkin(DBPool, Conn)
 	end,
 	[Insert(Doc) || Doc <- Docs].
 
 try_load(DBPool, []) ->
 	?T("download_cache empty, load hash from db"),
-	Conn = mongo_pool:get(DBPool),
-	case hash_reader_common:load_delete_doc(Conn, ?HASH_DOWNLOAD_COLL) of
+	% Conn = mongo_pool:get(DBPool),
+    Conn = poolboy:checkout(DBPool),
+    Ret = hash_reader_common:load_delete_doc(Conn, ?HASH_DOWNLOAD_COLL),
+    poolboy:checkin(DBPool, Conn),
+	case Ret of
 		{Doc} ->
 			{Doc, []};
 		{} ->

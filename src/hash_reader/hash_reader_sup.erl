@@ -11,20 +11,23 @@
 		 start_standalone/3,
 		 start_standalone/1]).
 -define(DBPOOLNAME, mongodb_conn_pool_name).
-		 
+
 start_dep_apps() ->
-	code:add_path("deps/bson/ebin"),
-	code:add_path("deps/mongodb/ebin"),
-	code:add_path("deps/kdht/ebin"),
-	code:add_path("deps/ibrowse/ebin"),
-	Apps = [asn1, crypto, public_key, ssl, inets, bson, mongodb],	
-	[application:start(App) || App <- Apps].
+	code:add_path("_build/default/lib/bson/ebin"),
+	code:add_path("_build/default/lib/mongodb/ebin"),
+	code:add_path("_build/default/lib/kdht/ebin"),
+	code:add_path("_build/default/lib/ibrowse/ebin"),
+	code:add_path("_build/default/lib/poolboy/ebin"),
+	code:add_path("_build/default/lib/pbkdf2/ebin"),
+	Apps = [asn1, crypto, public_key, ssl, inets, bson, pbkdf2, poolboy],
+	[application:start(App) || App <- Apps],
+    application:ensure_all_started(mongodb).
 
 start_standalone([IP, Port, Size]) ->
 	IPort = list_to_integer(Port),
 	ISize = list_to_integer(Size),
 	start_standalone(IP, IPort, ISize),
-	receive 
+	receive
 		fuck_erl_s_option -> ok
 	end.
 
@@ -39,7 +42,7 @@ start_standalone(IP, Port, Size) ->
 	DownloadCache = {hash_download_cache, {hash_download_cache, start_link, [?DBPOOLNAME]}, permanent, 2000, worker, [hash_download_cache]},
 	Stats = {hash_reader_stats, {hash_reader_stats, start_link, [Size]}, permanent, 2000, worker, [hash_reader_stats]},
 	DownloadStats = {tor_download_stats, {tor_download_stats, start_link, []}, permanent, 2000, worker, [tor_download_stats]},
-	Log = {vlog, {vlog, start_link, ["log/hash_reader.log", 3]}, permanent, 2000, worker, [vlog]},
+	Log = {vlog, {vlog, start_link, ["log/hash_reader.log", 0]}, permanent, 2000, worker, [vlog]},
 	DBDateRange = {db_daterange, {db_daterange, start_link, [?DBPOOLNAME]}, permanent, 1000, worker, [db_daterange]},
 	start_link(IP, Port, Size, [Log, DownloadCache, DBDateRange, DownloadStats, Stats]).
 
@@ -48,10 +51,16 @@ start_link(IP, Port, Size) ->
 
 start_link(IP, Port, Size, OtherProcess) ->
 	PoolName = ?DBPOOLNAME,
-	mongo_sup:start_pool(PoolName, 5, {IP, Port}),
+	% mongo_sup:start_pool(PoolName, 5, {IP, Port}),
+    {ok, Pool} = poolboy:start_link([{name, {local, PoolName}},
+                                     {worker_module, {mc_worker_api, connect}},
+                                     {size, 5}],
+                                    [{host, IP}, {port, Port}]),
 	% ensure index
-	Conn = mongo_pool:get(PoolName),
+	% Conn = mongo_pool:get(PoolName),
+    Conn = poolboy:checkout(Pool),
 	db_store_mongo:init(Conn),
+    poolboy:checkin(PoolName, Conn),
 	supervisor:start_link({local, srv_name()}, ?MODULE, [PoolName, Size, OtherProcess]).
 
 srv_name() ->
@@ -63,7 +72,7 @@ init([PoolName, Size, OtherProcess]) ->
     {ok, {Spec, Children}}.
 
 create_child(PoolName, Index) ->
-	{child_id(Index), {hash_reader2, start_link, [PoolName]}, 
+	{child_id(Index), {hash_reader2, start_link, [PoolName]},
 		permanent, 1000, worker, dynamic}.
 
 child_id(Index) ->

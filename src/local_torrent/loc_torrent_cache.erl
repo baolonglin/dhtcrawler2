@@ -36,7 +36,7 @@ save_to_file(MagHash, Content) ->
 		{error, Reason} ->
 			?E(?FMT("save torrent ~s on disk failed ~p", [FileName, Reason]))
 	end.
-		
+
 load_from_file(MagHash) ->
 	{_, FileName} = torrent_file_name(MagHash),
 	case file:read_file(FileName) of

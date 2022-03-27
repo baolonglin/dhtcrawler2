@@ -15,10 +15,10 @@
 		 stats_get_peers/1]).
 -export([get_torrent_id/1]).
 -compile(export_all).
--define(DBNAME, dht_system).
--define(COLLNAME, system).
+-define(DBNAME, <<"dht_system">>).
+-define(COLLNAME, <<"system">>).
 -define(HASH_BATCH_KEY, <<"hashbatch">>).
--define(STATS_COLLNAME, stats).
+-define(STATS_COLLNAME, <<"stats">>).
 -define(TORRENT_ID_KEY, <<"torrentid">>).
 
 % increase the seed and return the new id
@@ -77,35 +77,39 @@ create_batch_index(WIndex, RIndex) ->
 
 %% stats collection
 stats_new_saved(Conn) ->
-	stats_inc_field(Conn, new_saved).
+	stats_inc_field(Conn, <<"new_saved">>).
 
 stats_updated(Conn) ->
-	stats_inc_field(Conn, updated).
+	stats_inc_field(Conn, <<"updated">>).
 
 % already processes query
 stats_get_peers(Conn) ->
-	stats_inc_field(Conn, get_peers).
+	stats_inc_field(Conn, <<"get_peers">>).
 
 % all queries, not processed
 stats_query_inserted(Conn, Count) ->
-	stats_inc_field(Conn, get_peers_query, Count).
+	stats_inc_field(Conn, <<"get_peers_query">>, Count).
 
 stats_cache_query_inserted(Conn, Count) ->
-	stats_inc_field(Conn, inserted_query, Count).
+	stats_inc_field(Conn, <<"inserted_query">>, Count).
 
 stats_filtered(Conn) ->
-	stats_inc_field(Conn, filter_hash).
+	stats_inc_field(Conn, <<"filter_hash">>).
 
 stats_inc_field(Conn, Filed) ->
 	stats_inc_field(Conn, Filed, 1).
 
 stats_inc_field(Conn, Field, Inc) ->
 	TodaySecs = time_util:now_day_seconds(),
-	Cmd = {findAndModify, ?STATS_COLLNAME, query, {'_id', TodaySecs}, 
-		upsert, true, update, {'$inc', {Field, Inc}}, field, {'_id', 1}},
-	mongo:do(safe, master, Conn, ?DBNAME, fun() ->
-		mongo:command(Cmd)
-	end).
+	% Cmd = {findAndModify, ?STATS_COLLNAME, query, {'_id', TodaySecs},
+	%	upsert, true, update, {'$inc', {Field, Inc}}, field, {'_id', 1}},
+    mc_worker_api:update(#{connection => Conn, collection => ?STATS_COLLNAME,
+                           database => ?DBNAME,
+                           selector => #{<<"_id">> => TodaySecs},
+                           doc => #{<<"$inc">> => #{Field => Inc}}, upsert => true}).
+	% mongo:do(safe, master, Conn, ?DBNAME, fun() ->
+	%	mongo:command(Cmd)
+	% end).
 
 stats_day_at_slave(Conn, DaySec) ->
 	Ret = mongo:do(safe, slave_ok, Conn, ?DBNAME, fun() ->

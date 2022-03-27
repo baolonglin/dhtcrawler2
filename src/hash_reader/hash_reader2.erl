@@ -31,18 +31,19 @@ code_change(_, _, State) ->
     {ok, State}.
 
 handle_cast({process_hash, Doc}, State) ->
-	{BHash} = bson:lookup('_id', Doc),
-	Hash = binary_to_list(BHash),
+	Hash = maps:get(<<"_id">>, Doc), % bson:lookup('_id', Doc),
+	% Hash = binary_to_list(BHash),
 	ReqCnt = hash_reader_common:get_req_cnt(Doc),
-	Conn = db_conn(State),
+	Conn = db_conn_get(State),
 	case db_store_mongo:inc_announce(Conn, Hash, ReqCnt) of
-		true -> 
+		true ->
 			hash_reader_common:on_updated(Conn);
 		false ->
 			?T(?FMT("insert doc ~s to download_cache", [Hash])),
 			hash_download_cache:insert(Doc)
 	end,
 	schedule_next(Conn),
+    db_conn_return(State, Conn),
 	{noreply, State};
 
 handle_cast(stop, State) ->
@@ -52,8 +53,9 @@ handle_call(_, _From, State) ->
 	{noreply, State}.
 
 handle_info(timeout, State) ->
-	Conn = db_conn(State),
+	Conn = db_conn_get(State),
 	schedule_next(Conn),
+    db_conn_return(State, Conn),
 	{noreply, State}.
 
 schedule_next(Conn) ->
@@ -65,7 +67,11 @@ schedule_next(Conn) ->
 			gen_server:cast(self(), {process_hash, Doc})
 	end.
 
-db_conn(State) ->
+db_conn_get(State) ->
 	#state{dbpool = DBPool} = State,
-	mongo_pool:get(DBPool).
+	% mongo_pool:get(DBPool).
+    poolboy:checkout(DBPool).
 
+db_conn_return(State, Conn) ->
+    #state{dbpool = DBPool} = State,
+    poolboy:checkin(DBPool, Conn).

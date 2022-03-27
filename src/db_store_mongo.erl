@@ -21,12 +21,14 @@
 		 search/2]).
 -export([decode_torrent_item/1, ensure_date_index/1]).
 -compile(export_all).
--define(DBNAME, torrents).
--define(COLLNAME, hashes).
--define(SEARCH_COL, name_array).
+-define(DBNAME, <<"torrents">>).
+-define(COLLNAME, <<"hashes">>).
+-define(SEARCH_COL, <<"name_array">>).
 
 init(Host, Port) ->
-	{ok, Conn} = mongo_connection:start_link({Host, Port}),
+	{ok, Conn} = mc_worker_api:connect([{database, ?DBNAME},
+                                        {host, Host},
+                                        {port, Port}]),
 	?I(?FMT("connect mongodb ~p:~p success", [Host, Port])),
 	init(Conn),
 	Conn.
@@ -36,7 +38,6 @@ init(Conn) ->
 	case config:get(search_method, mongodb) of
 		mongodb ->
 			io:format("use mongod text search~n", []),
-			enable_text_search(Conn),
 			ensure_search_index(Conn);
 		sphinx ->
 			io:format("use sphinx search~n", [])
@@ -60,10 +61,10 @@ exist(Conn, Hash) when is_list(Hash) ->
 % {Rets, {Found, CostTime}}
 search(Conn, Key) when is_list(Key) ->
 	StripKey = string:strip(Key),
-	BinColl = list_to_binary(atom_to_list(?COLLNAME)),
+	% BinColl = list_to_binary(atom_to_list(?COLLNAME)),
 	BinKey = list_to_binary(StripKey),
 	Ret = mongo_do_slave(Conn, fun() ->
-		mongo:command({text, BinColl, search, BinKey, limit, 50})
+		mongo:command({text, ?COLLNAME, search, BinKey, limit, 50})
 	end),
 	{decode_search(Ret), decode_search_stats(Ret)}.
 
@@ -123,52 +124,59 @@ insert(Conn, Hash, Name, Length, Files) when is_list(Hash) ->
 	NewDoc = create_torrent_desc(Hash, Name, Length, 1, Files),
 	% TODO: because of the hash_cache_writer, the new inserted torrent lost the req_cnt value
 	db_daterange:insert(Conn, Hash, 1, true),
-	mongo_do(Conn, fun() ->
+    Ret = mc_worker_api:update(#{conneciton => Conn, collection => ?COLLNAME, database => ?DBNAME,
+                                 selector => #{<<"_id">> => list_to_binary(Hash)},
+                                 doc => NewDoc, upsert => true}),
+    ?T(?FMT("insert tor ~p", [Ret])).
+	% mongo_do(Conn, fun() ->
 		% the doc may already exist because the other process has inserted before
-		Sel = {'_id', list_to_binary(Hash)},
-		mongo:update(?COLLNAME, Sel, NewDoc, true)
-	end).
+	%	Sel = {'_id', list_to_binary(Hash)},
+	%	mongo:update(?COLLNAME, Sel, NewDoc, true)
+	%end).
 
 unsafe_insert(Conn, Tors) when is_list(Tors) ->
-	Docs = [create_torrent_desc(Hash, Name, Length, 1, Files) || 
+	Docs = [create_torrent_desc(Hash, Name, Length, 1, Files) ||
 				{Hash, Name, Length, Files} <- Tors],
 	mongo:do(unsafe, master, Conn, ?DBNAME, fun() ->
 		mongo:insert(?COLLNAME, Docs)
 	end).
 
-inc_announce(Conn, Hash) when is_list(Hash) ->
+inc_announce(Conn, Hash) when is_binary(Hash) ->
 	inc_announce(Conn, Hash, 1).
 
-inc_announce(Conn, Hash, Inc) when is_list(Hash) ->
+inc_announce(Conn, Hash, Inc) when is_binary(Hash) ->
 	% damn, mongodb-erlang doesnot support update a field for an object,
 	% `findAndModify` works but it will change `announce' datatype to double
-	BHash = list_to_binary(Hash),
-	Cmd = {findAndModify, ?COLLNAME, query, {'_id', BHash}, 
-		update, {'$inc', {announce, Inc}}, fields, {'_id', 1}, % not specifed or {} will return whole object
-		new, false},
-	Ret = mongo_do(Conn, fun() ->
-		mongo:command(Cmd)
-	end),
+	% BHash = list_to_binary(Hash),
+	% Cmd = {findAndModify, ?COLLNAME, query, {'_id', BHash},
+	%	update, {'$inc', {announce, Inc}}, fields, {'_id', 1}, % not specifed or {} will return whole object
+	%	new, false},
+	%Ret = mongo_do(Conn, fun() ->
+	%	mongo:command(Cmd)
+	%end),
+    Ret = mc_worker_api:update(#{connection => Conn, collection => ?COLLNAME, database => ?DBNAME,
+                           selector => #{<<"_id">> => Hash},
+                           doc => #{<<"$inc">> => #{<<"announce">> => Inc}}}),
 	case Ret of
-		{value, undefined, ok, 1.0} -> false;
-		{value, _Obj, lastErrorObject, {updatedExisting, true, n, 1}, ok, 1.0} -> 
-			db_daterange:insert(Conn, Hash, Inc, false),
+        {true, #{<<"n">> := 1, <<"nModified">> := 1}} ->
+		% {value, undefined, ok, 1.0} -> false;
+		% {value, _Obj, lastErrorObject, {updatedExisting, true, n, 1}, ok, 1.0} ->
+			db_daterange:insert(Conn, binary_to_list(Hash), Inc, false),
 			true;
-		_ -> false
+		_ -> ?I(?FMT("Failed to update announce for ~p ~p", [Hash, Ret])),
+            false
 	end.
 
 ensure_search_index(Conn) ->
-	Spec = {key, {?SEARCH_COL, <<"text">>}},
-	mongo_do(Conn, fun() ->
-		mongo:ensure_index(?COLLNAME, Spec)
-	end).
+	% Spec = {key, {?SEARCH_COL, <<"text">>}},
+	%mongo_do(Conn, fun() ->
+	%	mongo:ensure_index(?COLLNAME, Spec)
+	%end).
+    mc_worker_api:ensure_index(Conn, ?COLLNAME, #{<<"key">> => #{?SEARCH_COL => <<"text">>}}).
 
 ensure_date_index(Conn) ->
 	io:format("ensuring date index...", []),
-	Spec = {key, {created_at, 1}},
-	mongo_do(Conn, fun() ->
-		mongo:ensure_index(?COLLNAME, Spec)
-	end),
+    mc_worker_api:ensure_index(Conn, <<"hashes">>, #{<<"key">> => #{<<"created_at">> => 1}}),
 	io:format("done~n", []).
 
 % not work
@@ -301,10 +309,10 @@ test_search(Key) ->
 
 test_tmpsearch(Key) ->
 	test_content(fun(Conn) ->
-		BinColl = list_to_binary(atom_to_list(?COLLNAME)),
+		% BinColl = list_to_binary(atom_to_list(?COLLNAME)),
 		BinKey = list_to_binary(Key),
 		Ret = mongo_do(Conn, fun() ->
-			mongo:command({text, BinColl, search, BinKey})
+			mongo:command({text, ?COLLNAME, search, BinKey})
 		end),
 		Ret
 	end).

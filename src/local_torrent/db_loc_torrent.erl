@@ -5,8 +5,8 @@
 %%
 -module(db_loc_torrent).
 -include("db_common.hrl").
--define(DBNAME, torfiles).
--define(COLLNAME, torrents).
+-define(DBNAME, <<"torfiles">>).
+-define(COLLNAME, <<"torrents">>).
 -export([load_hash/1,
 		 save/3,
 		 load/2]).
@@ -39,14 +39,18 @@ save(Conn, MagHash, Content) ->
 
 % load a torrent file
 load(Conn, MagHash) when is_list(MagHash) ->
-	Ret = mongo:do(safe, master, Conn, ?DBNAME, fun() ->
-		Sel = {'_id', list_to_binary(MagHash)},
-		mongo:find_one(?COLLNAME, Sel)
-	end),
+	%Ret = mongo:do(safe, master, Conn, ?DBNAME, fun() ->
+	%	Sel = {'_id', list_to_binary(MagHash)},
+	%	mongo:find_one(?COLLNAME, Sel)
+	%end),
+    Ret = mc_worker_api:find_one(#{connection => Conn, collection => ?COLLNAME,
+                                   database => ?DBNAME,
+                                   selector => #{<<"_id">> => list_to_binary(MagHash)}}),
+    io:format("db_loc_torrent:load ~p~n", [Ret]),
 	case Ret of
-		{} -> 
+		undefined ->
 			not_found;
-		{Doc} ->
+		Doc ->
 			{{bin, bin, Content}} = bson:lookup(content, Doc),
 			Content
 	end.

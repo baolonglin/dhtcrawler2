@@ -51,6 +51,7 @@ init([]) ->
 	{ok, #state{start = now(), reqs = gb_trees:empty()}, 0}.
 
 handle_cast({download, MagHash, From}, State) ->
+    ?T(?FMT("download ~p", [MagHash])),
 	#state{reqs = Reqs, hashSum = H, reqSum = R} = State,
 	% remove these invalid requests
 	UpdateReqs = Reqs, %check_error_timeout_reqs(Reqs),
@@ -175,13 +176,13 @@ unzip_content(_B) ->
 %   	"http://zoink.it"].
 
 create_req_urls(MagHash) when is_list(MagHash), length(MagHash) == 40 ->
-	U1 = "http://torcache.net/torrent/" ++ MagHash ++ ".torrent",
-	U2 = format_btbox_url(MagHash),
-	U3 = "http://torrage.com/torrent/" ++ MagHash ++ ".torrent",
+	U1 = "http://itorrents.org/torrent/" ++ MagHash ++ ".torrent",
+	% U2 = format_btbox_url(MagHash),
+	% U3 = "http://torrage.com/torrent/" ++ MagHash ++ ".torrent",
 	% zoink cause ibrowse crash because error response
 	% zoink.it support https, but the ssl library seems memory leak
 	%U4 = "http://zoink.it/torrent/" ++ MagHash ++ ".torrent",
-	[U1, U2, U3].	
+	[U1].
 
 is_ssl_url(URL) when is_list(URL), length(URL) > 4 ->
 	string:substr(URL, 1, 5) == "https".

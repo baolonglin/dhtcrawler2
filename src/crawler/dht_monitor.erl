@@ -17,16 +17,19 @@
 
 % depends on the test log, `get_peers' > `announce_peer'
 handle_event(announce_peer, {_InfoHash, _IP, _BTPort}) ->
+    ?I("announce_peer"),
 	crawler_stats:announce();
 
 handle_event(get_peers, {InfoHash, _IP, _Port}) ->
 	crawler_stats:get_peers(),
 	%spawn(?MODULE, process_infohash_event, [InfoHash]);
 	MagHash = dht_id:tohex(InfoHash),
-	%db_hash:insert(MagHash);
+	% db_hash:insert(MagHash);
+    ?I(?FMT("get_peers MagHash ~p", [MagHash])),
 	hash_cache_writer:insert(MagHash);
 
 handle_event(startup, {MyID}) ->
+    ?I(?FMT("startup ~p", [MyID])),
 	spawn(?MODULE, tell_more_nodes, [MyID]).
 
 % since some operation will wait infinity, so spawn a new process
@@ -56,10 +59,11 @@ download(InfoHash) ->
 	torrent_download:download(MagHash, ?MODULE).
 
 handle_torrent(ok, MagHash, TContent) ->
+    ?I(?FMT("handle_torrent ~p", [MagHash])),
 	case catch(torrent_file:parse(TContent)) of
 		{'EXIT', _} ->
 			?E(?FMT("parse torrent file failed ~p", [TContent]));
-		{Type, Info} -> 
+		{Type, Info} ->
 			save_to_db(MagHash, Type, Info)
 	end,
 	ok;

@@ -15,11 +15,10 @@
          terminate/2,
          code_change/3]).
 -export([start_link/5, stop/0, insert/1]).
--export([do_save/1]). % to avoid unused warning
--record(state, {cache_time, cache_max}).
+-record(state, {cache_time, cache_max, db_conn}).
 -define(TBLNAME, hash_table).
--define(DBPOOL, hash_write_db).
--define(BATCH_INSERT, 100).
+% -define(DBPOOL, hash_write_db).
+% -define(BATCH_INSERT, 100).
 
 start_link(IP, Port, DBConn, MaxTime, MaxCnt) ->
 	gen_server:start_link({local, srv_name()}, ?MODULE, [IP, Port, DBConn, MaxTime, MaxCnt], []).
@@ -34,12 +33,17 @@ srv_name() ->
 	?MODULE.
 
 init([IP, Port, DBConn, MaxTime, Max]) ->
-	mongo_sup:start_pool(?DBPOOL, DBConn, {IP, Port}),
+	% mongo_sup:start_pool(?DBPOOL, DBConn, {IP, Port}),
+    Database = <<"dht_system">>,
+    {ok, Conn} = mc_worker_api:connect([{database, Database},
+                                        {host, IP},
+                                        {port, Port}]),
 	ets:new(?TBLNAME, [set, named_table]),
-	{ok, #state{cache_time = 1000 * MaxTime, cache_max = Max}, 0}.
+	{ok, #state{cache_time = 1000 * MaxTime, cache_max = Max, db_conn = Conn}, 0}.
 
 terminate(_, State) ->
-	mongo_sup:stop_pool(?DBPOOL),
+	% mongo_sup:stop_pool(?DBPOOL),
+    mc_worker_api:disconnect(State#state.db_conn),
     {ok, State}.
 
 code_change(_, _, State) ->
@@ -56,9 +60,9 @@ handle_cast(stop, State) ->
 handle_call(_, _From, State) ->
 	{noreply, State}.
 
-handle_info(do_save_cache, #state{cache_time = Time} = State) ->
-	?T("timeout to save cache hashes"),
-	do_save_merge(table_size(?TBLNAME)),
+handle_info(do_save_cache, #state{cache_time = Time, db_conn = Conn} = State) ->
+	?I("timeout to save cache hashes"),
+	do_save_merge(table_size(?TBLNAME), Conn),
 	schedule_save(Time),
 	{noreply, State};
 
@@ -78,87 +82,57 @@ table_size(Tbl) ->
 	Infos = ets:info(Tbl),
 	proplists:get_value(size, Infos).
 
-try_save(#state{cache_max = Max}) ->
+try_save(#state{cache_max = Max, db_conn = Conn}) ->
 	TSize = table_size(?TBLNAME),
-	try_save(TSize, Max).
+	try_save(TSize, Max, Conn).
 
-try_save(Size, Max) when Size >= Max ->
-	?T(?FMT("try save all cache hashes ~p", [Size])),
-	do_save_merge(Size);
-try_save(_, _) ->
+try_save(Size, Max, Conn) when Size >= Max ->
+	?I(?FMT("try save all cache hashes ~p", [Size])),
+	do_save_merge(Size, Conn);
+try_save(_, _, _) ->
 	ok.
 
 %% new method
 %% merge hashes into database, to decrease hashes processed by hash_reader
-do_save_merge(0) ->
+do_save_merge(0,_) ->
 	ok;
-do_save_merge(_) ->
+do_save_merge(_, Conn) ->
 	First = ets:first(?TBLNAME),
 	ReqAt = time_util:now_seconds(),
-	{ReqSum, NewSum} = do_save(First, ReqAt),
-	Conn = mongo_pool:get(?DBPOOL),
+	{ReqSum, NewSum} = do_save(First, ReqAt, Conn),
+	% Conn = mongo_pool:get(?DBPOOL),
 	db_system:stats_cache_query_inserted(Conn, NewSum),
 	db_system:stats_query_inserted(Conn, ReqSum),
 	ets:delete_all_objects(?TBLNAME).
-	
-do_save('$end_of_table', _) ->
+
+do_save('$end_of_table', _, _) ->
 	{0, 0};
-do_save(Key, ReqAt) ->
-	Conn = mongo_pool:get(?DBPOOL),
+do_save(Key, ReqAt, Conn) ->
+    %mongo_pool:get(?DBPOOL),
 	ReqCnt = get_req_cnt(Key),
 	BHash = list_to_binary(Key),
-	Cmd = {findAndModify, ?HASH_COLLNAME, query, {'_id', BHash},
-		update, {'$inc', {req_cnt, ReqCnt}, '$set', {req_at, ReqAt}}, 
-		fields, {'_id', 1}, upsert, true, new, false},
-	Ret = mongo:do(safe, master, Conn, ?HASH_DBNAME, fun() ->
-		mongo:command(Cmd)
-	end),
+	% Cmd = {findAndModify, ?HASH_COLLNAME, query, {'_id', BHash},
+	% 	update, {'$inc', {req_cnt, ReqCnt}, '$set', {req_at, ReqAt}},
+	%	fields, {'_id', 1}, upsert, true, new, false},
+    Cmd = #{<<"$inc">> => #{<<"req_cnt">> => ReqCnt},
+            <<"$set">> => #{<<"req_at">> => ReqAt}},
+	Ret = mc_worker_api:update(#{connection =>Conn, collection => ?HASH_COLLNAME,
+                                 selector => #{<<"_id">> => BHash},
+                                 doc => Cmd, upsert => true, database => ?HASH_DBNAME}),
+    % Ret = mongo:do(safe, master, Conn, ?HASH_DBNAME, fun() ->
+	% 	mongo:command(Cmd)
+	% end),
 	New = case Ret of
-		{value, _Obj, lastErrorObject, {updatedExisting, true, n, 1}, ok, 1.0} -> 
-			0;
-		_ -> 
-			1
-	end,
+              {true, #{<<"n">> := 1}} ->
+	%	{value, _Obj, lastErrorObject, {updatedExisting, true, n, 1}, ok, 1.0} ->
+                  ?I(?FMT("do_save update ~p", [BHash])),
+                  0;
+              _ ->
+                  1
+          end,
 	Next = ets:next(?TBLNAME, Key),
-	{ReqSum, NewSum} = do_save(Next, ReqAt),
+	{ReqSum, NewSum} = do_save(Next, ReqAt, Conn),
 	{ReqCnt + ReqSum, New + NewSum}.
-
-%% old method
-do_save(0) ->
-	ok;
-do_save(_) ->
-	Conn = mongo_pool:get(?DBPOOL),
-	First = ets:first(?TBLNAME),
-	ReqAt = time_util:now_seconds(),
-	{ReqSum, Docs} = to_docs(First, ReqAt),
-	ets:delete_all_objects(?TBLNAME),
-	do_save(Conn, Docs, ReqSum).
-
-to_docs('$end_of_table', _) ->
-	{0, []};
-to_docs(Key, ReqAt) ->
-	ReqCnt = get_req_cnt(Key),
-	Doc = {hash, list_to_binary(Key), req_at, ReqAt, req_cnt, ReqCnt},
-	Next = ets:next(?TBLNAME, Key),
-	{ReqSum, Docs} = to_docs(Next, ReqAt),
-	{ReqSum + ReqCnt, [Doc|Docs]}.
-
-do_save(Conn, Docs, ReqSum) ->
-	?T(?FMT("send ~p hashes req-count ~p to db", [length(Docs), ReqSum])),
-	save_hashes(Conn, Docs, 1),
-	db_system:stats_cache_query_inserted(Conn, length(Docs)),
-	db_system:stats_query_inserted(Conn, ReqSum).
-
-save_hashes(Conn, Docs, Pos) when Pos < length(Docs) ->
-	SubDocs = lists:sublist(Docs, Pos, ?BATCH_INSERT),
-	% `safe' may cause this process message queue increasing, but `unsafe' may cause the 
-	% database crashes.
-	mongo:do(safe, master, Conn, ?HASH_DBNAME, fun() ->
-		mongo:insert(?HASH_COLLNAME, SubDocs)
-	end),
-	save_hashes(Conn, Docs, Pos + ?BATCH_INSERT);
-save_hashes(_, _, _) ->
-	ok.
 
 get_req_cnt(Hash) ->
 	case ets:lookup(?TBLNAME, Hash) of

@@ -41,7 +41,7 @@ saved(New) ->
 	Type = case New of
 		true -> new_torrent;
 		false -> update_torrent
-	end,	
+	end,
 	gen_server:cast(srv_name(), {Type}).
 
 get_stats() ->

@@ -32,11 +32,16 @@ do_start() ->
 start() ->
 	filelib:ensure_dir("log/"),
 	error_logger:logfile({open, "log/crash.log"}),
-	code:add_path("deps/bson/ebin"),
-	code:add_path("deps/kdht/ebin"),
-	code:add_path("deps/mongodb/ebin"),
-	Apps = [asn1, crypto, public_key, ssl, inets, bson, mongodb],	
+	code:add_path("_build/default/lib/bson/ebin"),
+	code:add_path("_build/default/lib/kdht/ebin"),
+	code:add_path("_build/default/lib/mongodb/ebin"),
+	code:add_path("_build/default/lib/poolboy/ebin"),
+	code:add_path("_build/default/lib/pbkdf2/ebin"),
+	code:add_path("_build/default/lib/giza/ebin"),
+	code:add_path("_build/default/lib/ibrowse/ebin"),
+	Apps = [asn1, crypto, public_key, ssl, inets, bson, pbkdf2, poolboy],
 	[application:start(App) || App <- Apps],
+    application:ensure_all_started(mongodb),
 	application:start(dhtcrawler).
 
 stop() ->
